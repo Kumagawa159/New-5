@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>📡 PeerShare – Video & File Sharing</title>
+  <title>📡 PeerShare – Video, File & Voice</title>
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <style>
     * { box-sizing: border-box; }
@@ -47,6 +47,9 @@
     button.secondary { background: #533483; }
     button.success { background: #2ecc71; }
     button.danger { background: #c0392b; }
+    button.voice { background: #f39c12; }
+    button.voice.active { background: #2ecc71; }
+    button.mute { background: #e67e22; }
     video {
       width: 100%;
       max-width: 800px;
@@ -121,6 +124,8 @@
     }
     label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
     input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+    .viewer-list { margin: 10px 0; }
+    .viewer-item { background: #0f1a30; padding: 6px 12px; border-radius: 6px; margin: 4px 0; display: flex; justify-content: space-between; align-items: center; }
   </style>
 </head>
 <body>
@@ -129,7 +134,7 @@
   <!-- Home -->
   <div id="home" class="card">
     <h1>📡 PeerShare</h1>
-    <p>Choose your role. The <strong>Host</strong> shares their camera/screen. <strong>Viewers</strong> watch.</p>
+    <p>Choose your role. The <strong>Host</strong> shares their camera/screen. <strong>Viewers</strong> watch and can voice chat.</p>
     <div class="flex">
       <button id="btnHost" class="success">🎥 Start Hosting</button>
       <button id="btnViewer" class="secondary">👀 Join as Viewer</button>
@@ -147,15 +152,16 @@
     </div>
     <div class="flex">
       <button id="startCam" class="success">📷 Start Camera &amp; Mic</button>
-      <!-- Screen share with 1080p60 checkbox -->
       <label>
         <input type="checkbox" id="highQualityScreen"> 🔥 1080p60
       </label>
       <button id="startScreen" class="secondary">🖥 Share Screen</button>
+      <button id="muteAllAudio" class="mute">🔇 Mute All Audio</button>
     </div>
     <video id="localVideo" autoplay muted playsinline></video>
     <div>
       <h3>Viewers connected: <span id="viewerCount">0</span></h3>
+      <div id="viewerList" class="viewer-list"></div>
     </div>
     <div>
       <h3>Chat</h3>
@@ -187,6 +193,9 @@
       <video id="remoteVideo" autoplay playsinline></video>
       <button id="fullscreenBtn">⛶ Full Screen</button>
     </div>
+    <div class="flex">
+      <button id="voiceChatBtn" class="voice">🎤 Voice Chat</button>
+    </div>
     <div>
       <h3>Chat</h3>
       <div id="viewerChat" class="chat-box"></div>
@@ -210,9 +219,13 @@
 <script>
   // ---------- Global state ----------
   let peer = null;
-  let connections = [];
-  let localStream = null;
+  let connections = [];          // data connections (viewers)
+  let localStream = null;        // host's outgoing video/audio
   let isHost = false;
+
+  // For voice chat (host side)
+  let audioCalls = new Map();    // viewerPeerId -> MediaConnection (audio)
+  let audioStreams = new Map();  // viewerPeerId -> MediaStream (for muting)
 
   // DOM refs
   const home = document.getElementById('home');
@@ -227,6 +240,7 @@
   const startScreenBtn = document.getElementById('startScreen');
   const localVideo = document.getElementById('localVideo');
   const viewerCount = document.getElementById('viewerCount');
+  const viewerList = document.getElementById('viewerList');
 
   const hostChat = document.getElementById('hostChat');
   const hostChatInput = document.getElementById('hostChatInput');
@@ -245,6 +259,8 @@
   const viewerSendFile = document.getElementById('viewerSendFile');
   const fullscreenBtn = document.getElementById('fullscreenBtn');
   const highQualityScreen = document.getElementById('highQualityScreen');
+  const voiceChatBtn = document.getElementById('voiceChatBtn');
+  const muteAllAudioBtn = document.getElementById('muteAllAudio');
 
   // Utility: display status
   function setStatus(msg) {
@@ -260,7 +276,7 @@
     box.scrollTop = box.scrollHeight;
   }
 
-  // ---------- Full‑screen functions ----------
+  // ---------- Full‑screen ----------
   function toggleFullscreen() {
     if (!document.fullscreenElement) {
       remoteVideo.requestFullscreen().then(() => {
@@ -274,15 +290,9 @@
       document.exitFullscreen();
     }
   }
-
   document.addEventListener('fullscreenchange', () => {
-    if (document.fullscreenElement === remoteVideo) {
-      fullscreenBtn.textContent = '⛶ Exit Full Screen';
-    } else {
-      fullscreenBtn.textContent = '⛶ Full Screen';
-    }
+    fullscreenBtn.textContent = document.fullscreenElement === remoteVideo ? '⛶ Exit Full Screen' : '⛶ Full Screen';
   });
-
   fullscreenBtn.onclick = toggleFullscreen;
   remoteVideo.addEventListener('dblclick', toggleFullscreen);
 
@@ -305,9 +315,12 @@
       isHost = true;
       startCamBtn.disabled = false;
       startScreenBtn.disabled = false;
+
+      // Listen for incoming data connections (viewers)
       peer.on('connection', (conn) => {
         connections.push(conn);
-        updateViewerCount();
+        updateViewerList();
+        // Send our video stream if available
         if (localStream) {
           const call = peer.call(conn.peer, localStream);
         }
@@ -321,6 +334,33 @@
             }
           } catch (e) { console.warn('Non-JSON data:', data); }
         });
+        // Store the connection and its peer ID for later reference
+        conn.peerId = conn.peer;
+      });
+
+      // Listen for incoming audio calls from viewers
+      peer.on('call', (call) => {
+        // We only accept if the caller is one of our viewers (optional)
+        // For simplicity, accept all and play audio
+        call.answer(); // no stream from host, just receive
+        call.on('stream', (remoteAudioStream) => {
+          // Play the audio
+          const audioEl = new Audio();
+          audioEl.srcObject = remoteAudioStream;
+          audioEl.autoplay = true;
+          audioEl.volume = 1.0;
+          // Store so we can mute later
+          audioStreams.set(call.peer, remoteAudioStream);
+          audioCalls.set(call.peer, call);
+          // We might want to keep a reference to the audio element to stop it later
+          // But we can just stop the track when muting.
+          setStatus('Voice chat active from ' + call.peer);
+        });
+        call.on('close', () => {
+          audioCalls.delete(call.peer);
+          audioStreams.delete(call.peer);
+          setStatus('Voice chat ended from ' + call.peer);
+        });
       });
     });
     peer.on('error', (err) => {
@@ -329,11 +369,56 @@
     });
   }
 
-  function updateViewerCount() {
+  // Update host's viewer list with mute controls (per viewer)
+  function updateViewerList() {
     viewerCount.textContent = connections.length;
+    viewerList.innerHTML = '';
+    connections.forEach((conn, index) => {
+      const div = document.createElement('div');
+      div.className = 'viewer-item';
+      const label = document.createElement('span');
+      label.textContent = 'Viewer ' + (index + 1) + ' (' + conn.peer + ')';
+      const muteBtn = document.createElement('button');
+      muteBtn.textContent = '🔇 Mute';
+      muteBtn.className = 'secondary';
+      muteBtn.style.padding = '4px 10px';
+      muteBtn.onclick = () => {
+        // Toggle mute for this viewer's audio
+        const stream = audioStreams.get(conn.peer);
+        if (stream) {
+          const enabled = stream.getAudioTracks()[0]?.enabled;
+          if (enabled !== undefined) {
+            stream.getAudioTracks().forEach(t => t.enabled = !t.enabled);
+            muteBtn.textContent = stream.getAudioTracks()[0]?.enabled ? '🔇 Mute' : '🔊 Unmute';
+          }
+        } else {
+          alert('No active voice chat from this viewer.');
+        }
+      };
+      div.appendChild(label);
+      div.appendChild(muteBtn);
+      viewerList.appendChild(div);
+    });
   }
 
-  // Camera (default, no quality selection)
+  // Mute all audio
+  muteAllAudioBtn.onclick = () => {
+    let allMuted = true;
+    audioStreams.forEach((stream) => {
+      const track = stream.getAudioTracks()[0];
+      if (track) {
+        // If any track is enabled, we mute all; else unmute all
+        if (track.enabled) allMuted = false;
+      }
+    });
+    audioStreams.forEach((stream) => {
+      stream.getAudioTracks().forEach(t => t.enabled = !allMuted);
+    });
+    muteAllAudioBtn.textContent = allMuted ? '🔇 Mute All Audio' : '🔊 Unmute All Audio';
+    setStatus(allMuted ? 'All audio muted' : 'All audio unmuted');
+  };
+
+  // Camera start (unchanged)
   startCamBtn.onclick = async () => {
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -347,7 +432,7 @@
     }
   };
 
-  // Screen sharing with 1080p60 toggle
+  // Screen share with 1080p60 toggle (unchanged)
   startScreenBtn.onclick = async () => {
     const useHighQuality = highQualityScreen.checked;
     let videoConstraints;
@@ -358,9 +443,8 @@
         frameRate: { ideal: 60 }
       };
     } else {
-      videoConstraints = true; // browser default
+      videoConstraints = true;
     }
-
     try {
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: videoConstraints,
@@ -374,7 +458,6 @@
       setStatus(useHighQuality ? 'Screen sharing (1080p60)' : 'Screen sharing (default)');
       for (const conn of connections) {
         const call = peer.call(conn.peer, localStream);
-        // (Optional) set higher bitrate for 1080p60
         if (useHighQuality) {
           call.on('stream', () => {
             try {
@@ -383,7 +466,7 @@
               if (videoSender) {
                 const params = videoSender.getParameters();
                 if (!params.encodings) params.encodings = [{}];
-                params.encodings[0].maxBitrate = 8_000_000; // 8 Mbps
+                params.encodings[0].maxBitrate = 8_000_000;
                 videoSender.setParameters(params).catch(console.warn);
               }
             } catch (e) { /* ignore */ }
@@ -399,9 +482,13 @@
     if (peer) { peer.destroy(); peer = null; }
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     connections = [];
+    audioCalls.clear();
+    audioStreams.clear();
     localVideo.srcObject = null;
     hostChat.innerHTML = '';
     hostPeerIdDisplay.textContent = '---';
+    viewerList.innerHTML = '';
+    viewerCount.textContent = '0';
     hostPanel.classList.add('hidden');
     home.classList.remove('hidden');
     isHost = false;
@@ -465,6 +552,60 @@
   }
 
   // ---------- Viewer functions ----------
+  let viewerVoiceStream = null;
+  let voiceCall = null;
+  let isVoiceActive = false;
+
+  function toggleVoice() {
+    if (!window._viewerConn || !window._viewerConn.open) {
+      alert('Not connected to host.');
+      return;
+    }
+    if (isVoiceActive) {
+      // Stop voice
+      if (voiceCall) {
+        voiceCall.close();
+        voiceCall = null;
+      }
+      if (viewerVoiceStream) {
+        viewerVoiceStream.getTracks().forEach(t => t.stop());
+        viewerVoiceStream = null;
+      }
+      isVoiceActive = false;
+      voiceChatBtn.textContent = '🎤 Voice Chat';
+      voiceChatBtn.classList.remove('active');
+      setStatus('Voice chat stopped');
+    } else {
+      // Start voice
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then((audioStream) => {
+          viewerVoiceStream = audioStream;
+          // Call the host with audio only
+          voiceCall = peer.call(window._viewerConn.peer, audioStream);
+          voiceCall.on('close', () => {
+            isVoiceActive = false;
+            voiceChatBtn.textContent = '🎤 Voice Chat';
+            voiceChatBtn.classList.remove('active');
+            setStatus('Voice chat ended by host');
+          });
+          voiceCall.on('error', (err) => {
+            console.error('Voice call error:', err);
+            setStatus('Voice error: ' + err.message);
+          });
+          isVoiceActive = true;
+          voiceChatBtn.textContent = '🔊 Voice Chat (ON)';
+          voiceChatBtn.classList.add('active');
+          setStatus('Voice chat active');
+        })
+        .catch((err) => {
+          alert('Could not access microphone: ' + err.message);
+          setStatus('Mic access denied');
+        });
+    }
+  }
+
+  voiceChatBtn.onclick = toggleVoice;
+
   function joinViewer(hostId) {
     if (!hostId) { alert('Please enter the Host Peer ID.'); return; }
     peer = new Peer({
@@ -489,6 +630,7 @@
           } catch (e) { console.warn('Non-JSON data:', data); }
         });
         peer.on('call', (incoming) => {
+          // This is the host's video call
           incoming.answer();
           incoming.on('stream', (stream) => {
             remoteVideo.srcObject = stream;
@@ -496,6 +638,8 @@
           });
         });
         window._viewerConn = conn;
+        // Enable voice button
+        voiceChatBtn.disabled = false;
         viewerSendChat.disabled = false;
         viewerSendFile.disabled = false;
         disconnectBtn.disabled = false;
@@ -515,6 +659,10 @@
     if (peer) { peer.destroy(); peer = null; }
     remoteVideo.srcObject = null;
     viewerChat.innerHTML = '';
+    // Stop voice if active
+    if (isVoiceActive) {
+      toggleVoice(); // will stop
+    }
     viewerPanel.classList.add('hidden');
     home.classList.remove('hidden');
     setStatus('Disconnected.');
@@ -522,6 +670,7 @@
     disconnectBtn.disabled = true;
     viewerSendChat.disabled = true;
     viewerSendFile.disabled = true;
+    voiceChatBtn.disabled = true;
     if (document.fullscreenElement) document.exitFullscreen();
   };
 
@@ -575,6 +724,7 @@
   viewerSendChat.disabled = true;
   viewerSendFile.disabled = true;
   disconnectBtn.disabled = true;
+  voiceChatBtn.disabled = true;
 
   // Auto‑start host if URL has ?host=1
   if (new URLSearchParams(window.location.search).has('host')) {
