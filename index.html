@@ -54,6 +54,16 @@
       background: #0a0a1a;
       display: block;
     }
+    /* Full‑screen video styling */
+    video:fullscreen {
+      width: 100vw;
+      height: 100vh;
+      max-width: 100vw;
+      max-height: 100vh;
+      object-fit: contain;
+      border-radius: 0;
+      background: #000;
+    }
     .chat-box {
       height: 200px;
       overflow-y: auto;
@@ -90,7 +100,7 @@
 <body>
 <div class="app">
 
-  <!-- Role Selection -->
+  <!-- Home / Role Selection -->
   <div id="home" class="card">
     <h1>📡 PeerShare</h1>
     <p>Choose your role. The <strong>Host</strong> shares their camera/screen. <strong>Viewers</strong> watch.</p>
@@ -143,7 +153,11 @@
       <button id="connectBtn" class="success">🔗 Connect</button>
       <button id="disconnectBtn" class="danger">⏹ Disconnect</button>
     </div>
-    <video id="remoteVideo" autoplay playsinline></video>
+    <div style="position: relative; display: inline-block; width: 100%; max-width: 800px;">
+      <video id="remoteVideo" autoplay playsinline></video>
+      <!-- Full‑screen button -->
+      <button id="fullscreenBtn" class="secondary" style="position: absolute; bottom: 12px; right: 12px; background: rgba(0,0,0,0.6); border: 1px solid #fff; padding: 8px 12px; font-size: 1.2rem; border-radius: 8px; backdrop-filter: blur(4px);">⛶ Full Screen</button>
+    </div>
     <div>
       <h3>Chat</h3>
       <div id="viewerChat" class="chat-box"></div>
@@ -166,8 +180,8 @@
 
 <script>
   // ---------- Global state ----------
-  let peer = null;           // PeerJS instance (host or viewer)
-  let connections = [];      // list of active connections (host side)
+  let peer = null;
+  let connections = [];
   let localStream = null;
   let remoteStream = null;
   let isHost = false;
@@ -201,6 +215,7 @@
   const viewerSendChat = document.getElementById('viewerSendChat');
   const viewerFileInput = document.getElementById('viewerFileInput');
   const viewerSendFile = document.getElementById('viewerSendFile');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
 
   // Utility: display status message
   function setStatus(msg) {
@@ -215,9 +230,8 @@
     box.scrollTop = box.scrollHeight;
   }
 
-  // ---------- Host functions ----------
+  // ---------- Host functions (unchanged) ----------
   function startHosting() {
-    // Create a new Peer with a random ID (or let user choose)
     const id = prompt('Enter a Peer ID for this room (or leave blank for random):', '');
     peer = new Peer(id, {
       host: '0.peerjs.com',
@@ -233,30 +247,25 @@
       hostPanel.classList.remove('hidden');
       viewerPanel.classList.add('hidden');
       isHost = true;
-      // Enable actions
       startCamBtn.disabled = false;
       startScreenBtn.disabled = false;
-      // Start listening for connections
       peer.on('connection', (conn) => {
-        // New viewer connected
         connections.push(conn);
         updateViewerCount();
-        // Send our stream if available
         if (localStream) {
-          // We need to send via data channel first to negotiate media? Actually we need to use peer.call for media.
-          // But PeerJS connections are for data. For video, we need to call peer.call on the connection's peer ID.
-          // Actually we should use peer.on('call') for incoming media streams.
-          // Better: we'll handle incoming calls.
-          // Let's refactor: we'll store connections array, but for media we'll use peer.call.
-          // We'll also handle data channel for chat/file.
-          // In this simplified version, we'll assume that when a viewer connects, we call them with our stream.
-          // But we need to know the viewer's peer ID. We can get it from conn.peer.
-          // So inside peer.on('connection') we have the connection object; we can call peer.call(conn.peer, localStream)
-          // and that will create a media connection.
-          // However, the viewer also needs to accept the call.
+          const call = peer.call(conn.peer, localStream);
         }
+        conn.on('data', (data) => {
+          try {
+            const msg = JSON.parse(data);
+            if (msg.type === 'chat') {
+              appendChat(hostChat, msg.text, 'Viewer');
+            } else if (msg.type === 'file') {
+              receiveFile(hostChat, msg);
+            }
+          } catch (e) { console.warn('Non-JSON data:', data); }
+        });
       });
-      // Also listen for incoming calls (if viewer connects first, but here host initiates)
     });
     peer.on('error', (err) => {
       setStatus('Error: ' + err.message);
@@ -264,95 +273,43 @@
     });
   }
 
-  // When a new viewer connects via data connection, we call them with media
-  function handleNewViewer(conn) {
-    // Store the connection for data
-    connections.push(conn);
-    updateViewerCount();
-
-    // Send our local stream if available
-    if (localStream) {
-      const call = peer.call(conn.peer, localStream);
-      // The viewer will receive the stream in their 'call' event handler.
-    }
-
-    // Set up data channel for chat/file
-    conn.on('data', (data) => {
-      try {
-        const msg = JSON.parse(data);
-        if (msg.type === 'chat') {
-          appendChat(hostChat, msg.text, 'Viewer');
-        } else if (msg.type === 'file') {
-          // Host receives file from viewer
-          receiveFile(hostChat, msg);
-        }
-      } catch (e) {
-        console.warn('Non-JSON data:', data);
-      }
-    });
-
-    // Notify viewer about existing chat messages? Not needed.
-  }
-
-  // Update viewer count display
   function updateViewerCount() {
     viewerCount.textContent = connections.length;
   }
 
-  // Start camera + mic
   startCamBtn.onclick = async () => {
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localVideo.srcObject = localStream;
       setStatus('Camera/mic active.');
-      // For any existing connections, call them with the stream
       for (const conn of connections) {
         const call = peer.call(conn.peer, localStream);
-        // We don't need to handle call events on host side; viewer will receive stream.
       }
     } catch (err) {
       setStatus('Could not access camera/mic: ' + err.message);
     }
   };
 
-  // Screen sharing
   startScreenBtn.onclick = async () => {
     try {
       const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      // Replace local stream
       if (localStream) {
         localStream.getTracks().forEach(t => t.stop());
       }
       localStream = screenStream;
       localVideo.srcObject = localStream;
       setStatus('Screen sharing active.');
-      // For existing connections, we need to replace the stream. In PeerJS, you can't replace stream easily,
-      // but you can end the call and start a new one. Simpler: close all media connections and re-call.
-      // For simplicity, we'll just close all and re-call.
-      // Actually we need to handle calls differently. Let's just send the new stream to all viewers.
-      // We'll call each viewer again with the new stream (they'll receive a new call).
-      // We can close previous calls, but let's just re-call.
-      // We'll need to store call objects. For brevity, we'll just call again; the viewer will handle duplicate calls.
-      // Not ideal, but works for demo.
       for (const conn of connections) {
         const call = peer.call(conn.peer, localStream);
-        // We could track calls to close old ones, but skip for simplicity.
       }
     } catch (err) {
       setStatus('Screen share cancelled or failed: ' + err.message);
     }
   };
 
-  // Stop hosting
   stopHostBtn.onclick = () => {
-    if (peer) {
-      peer.destroy();
-      peer = null;
-    }
-    if (localStream) {
-      localStream.getTracks().forEach(t => t.stop());
-      localStream = null;
-    }
+    if (peer) { peer.destroy(); peer = null; }
+    if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     connections = [];
     localVideo.srcObject = null;
     hostChat.innerHTML = '';
@@ -363,25 +320,21 @@
     setStatus('Stopped hosting.');
   };
 
-  // Copy Peer ID
   copyPeerIdBtn.onclick = () => {
     const id = hostPeerIdDisplay.textContent;
     if (id && id !== '---') {
-      navigator.clipboard.writeText(id).then(() => {
-        setStatus('Peer ID copied!');
-      }).catch(() => {
-        // fallback
-        const range = document.createRange();
-        range.selectNode(hostPeerIdDisplay);
-        window.getSelection().removeAllRanges();
-        window.getSelection().addRange(range);
-        document.execCommand('copy');
-        setStatus('Copied (fallback).');
-      });
+      navigator.clipboard.writeText(id).then(() => setStatus('Peer ID copied!'))
+        .catch(() => {
+          const range = document.createRange();
+          range.selectNode(hostPeerIdDisplay);
+          window.getSelection().removeAllRanges();
+          window.getSelection().addRange(range);
+          document.execCommand('copy');
+          setStatus('Copied (fallback).');
+        });
     }
   };
 
-  // Chat from host
   hostSendChat.onclick = () => {
     const text = hostChatInput.value.trim();
     if (!text) return;
@@ -394,7 +347,6 @@
   };
   hostChatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') hostSendChat.click(); });
 
-  // Send file from host
   hostSendFile.onclick = () => {
     const file = hostFileInput.files[0];
     if (!file) { alert('Select a file first.'); return; }
@@ -410,7 +362,6 @@
     reader.readAsArrayBuffer(file);
   };
 
-  // Helper: receive file (both host and viewer)
   function receiveFile(chatBox, msg) {
     const blob = new Blob([new Uint8Array(msg.data)], { type: 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
@@ -425,10 +376,9 @@
     chatBox.scrollTop = chatBox.scrollHeight;
   }
 
-  // ---------- Viewer functions ----------
+  // ---------- Viewer functions (with full-screen) ----------
   function joinViewer(hostId) {
     if (!hostId) { alert('Please enter the Host Peer ID.'); return; }
-    // Create a new Peer (viewer) with random ID
     peer = new Peer({
       host: '0.peerjs.com',
       port: 443,
@@ -437,11 +387,9 @@
     });
     peer.on('open', () => {
       setStatus('Viewer connected to signaling.');
-      // Now connect to host
       const conn = peer.connect(hostId);
       conn.on('open', () => {
         setStatus('Connected to host.');
-        // Data channel ready
         conn.on('data', (data) => {
           try {
             const msg = JSON.parse(data);
@@ -450,26 +398,16 @@
             } else if (msg.type === 'file') {
               receiveFile(viewerChat, msg);
             }
-          } catch (e) {
-            console.warn('Non-JSON data:', data);
-          }
+          } catch (e) { console.warn('Non-JSON data:', data); }
         });
-        // Now request the host's stream by calling? Actually host will call us.
-        // We need to listen for incoming calls.
         peer.on('call', (incoming) => {
-          incoming.answer(); // Accept the call (we don't need to send our own stream)
+          incoming.answer();
           incoming.on('stream', (stream) => {
             remoteVideo.srcObject = stream;
             setStatus('Receiving host video.');
           });
         });
-        // If host already sent a call before we connected? That's unlikely; the host initiates call when viewer connects.
-        // But we might miss it if we connect after the host already called. However, the host will call when they see our connection.
-        // We'll handle both: after conn is open, we'll also send a signal to host to request stream? But host will call.
-        // We'll store conn for later chat/file.
-        // Save connection
         window._viewerConn = conn;
-        // Enable chat/file UI
         viewerSendChat.disabled = false;
         viewerSendFile.disabled = false;
         disconnectBtn.disabled = false;
@@ -479,25 +417,14 @@
         hostPanel.classList.add('hidden');
         isHost = false;
       });
-      conn.on('error', (err) => {
-        setStatus('Connection error: ' + err.message);
-      });
+      conn.on('error', (err) => setStatus('Connection error: ' + err.message));
     });
-    peer.on('error', (err) => {
-      setStatus('Peer error: ' + err.message);
-    });
+    peer.on('error', (err) => setStatus('Peer error: ' + err.message));
   }
 
-  // Viewer disconnect
   disconnectBtn.onclick = () => {
-    if (window._viewerConn) {
-      window._viewerConn.close();
-      window._viewerConn = null;
-    }
-    if (peer) {
-      peer.destroy();
-      peer = null;
-    }
+    if (window._viewerConn) { window._viewerConn.close(); window._viewerConn = null; }
+    if (peer) { peer.destroy(); peer = null; }
     remoteVideo.srcObject = null;
     viewerChat.innerHTML = '';
     viewerPanel.classList.add('hidden');
@@ -507,9 +434,10 @@
     disconnectBtn.disabled = true;
     viewerSendChat.disabled = true;
     viewerSendFile.disabled = true;
+    // Exit full-screen if active
+    if (document.fullscreenElement) document.exitFullscreen();
   };
 
-  // Viewer send chat
   viewerSendChat.onclick = () => {
     const conn = window._viewerConn;
     if (!conn || !conn.open) { alert('Not connected.'); return; }
@@ -522,7 +450,6 @@
   };
   viewerChatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') viewerSendChat.click(); });
 
-  // Viewer send file
   viewerSendFile.onclick = () => {
     const conn = window._viewerConn;
     if (!conn || !conn.open) { alert('Not connected.'); return; }
@@ -538,10 +465,33 @@
     reader.readAsArrayBuffer(file);
   };
 
-  // ---------- Event Listeners for role selection ----------
-  document.getElementById('btnHost').onclick = () => {
-    startHosting();
-  };
+  // ---------- Full‑screen toggle ----------
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      remoteVideo.requestFullscreen().catch(err => {
+        alert('Fullscreen error: ' + err.message);
+      });
+    } else {
+      document.exitFullscreen();
+    }
+  }
+
+  fullscreenBtn.onclick = toggleFullscreen;
+
+  // Double‑click on video toggles full‑screen
+  remoteVideo.addEventListener('dblclick', toggleFullscreen);
+
+  // Update button text when full‑screen changes
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement === remoteVideo) {
+      fullscreenBtn.textContent = '⛶ Exit Full Screen';
+    } else {
+      fullscreenBtn.textContent = '⛶ Full Screen';
+    }
+  });
+
+  // ---------- Role selection ----------
+  document.getElementById('btnHost').onclick = startHosting;
 
   document.getElementById('btnViewer').onclick = () => {
     const hostId = prompt('Enter the Host Peer ID:', '');
@@ -557,15 +507,14 @@
     else alert('Please enter a Host Peer ID.');
   };
 
-  // Disable viewer send initially
+  hostIdInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn.click(); });
+
+  // Initial disabled states
   viewerSendChat.disabled = true;
   viewerSendFile.disabled = true;
   disconnectBtn.disabled = true;
 
-  // Allow enter key for host ID input
-  hostIdInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn.click(); });
-
-  // Start hosting if URL has ?host=1
+  // Auto‑start host if URL has ?host=1
   if (new URLSearchParams(window.location.search).has('host')) {
     setTimeout(() => document.getElementById('btnHost').click(), 100);
   }
