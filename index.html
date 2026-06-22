@@ -54,7 +54,7 @@
       background: #0a0a1a;
       display: block;
     }
-    /* Full‑screen video styling */
+    /* Full‑screen video */
     video:fullscreen {
       width: 100vw;
       height: 100vh;
@@ -95,12 +95,38 @@
       border: 1px solid #2ecc71;
       display: inline-block;
     }
+    /* Full‑screen button styling */
+    #fullscreenBtn {
+      position: absolute;
+      bottom: 16px;
+      right: 16px;
+      background: rgba(0,0,0,0.75);
+      border: 2px solid #fff;
+      color: #fff;
+      padding: 10px 18px;
+      font-size: 1.2rem;
+      border-radius: 10px;
+      cursor: pointer;
+      z-index: 20;
+      backdrop-filter: blur(4px);
+      transition: 0.2s;
+    }
+    #fullscreenBtn:hover {
+      background: rgba(255,255,255,0.2);
+      border-color: #2ecc71;
+    }
+    .video-wrapper {
+      position: relative;
+      display: inline-block;
+      width: 100%;
+      max-width: 800px;
+    }
   </style>
 </head>
 <body>
 <div class="app">
 
-  <!-- Home / Role Selection -->
+  <!-- Home -->
   <div id="home" class="card">
     <h1>📡 PeerShare</h1>
     <p>Choose your role. The <strong>Host</strong> shares their camera/screen. <strong>Viewers</strong> watch.</p>
@@ -153,10 +179,9 @@
       <button id="connectBtn" class="success">🔗 Connect</button>
       <button id="disconnectBtn" class="danger">⏹ Disconnect</button>
     </div>
-    <div style="position: relative; display: inline-block; width: 100%; max-width: 800px;">
+    <div class="video-wrapper">
       <video id="remoteVideo" autoplay playsinline></video>
-      <!-- Full‑screen button -->
-      <button id="fullscreenBtn" class="secondary" style="position: absolute; bottom: 12px; right: 12px; background: rgba(0,0,0,0.6); border: 1px solid #fff; padding: 8px 12px; font-size: 1.2rem; border-radius: 8px; backdrop-filter: blur(4px);">⛶ Full Screen</button>
+      <button id="fullscreenBtn">⛶ Full Screen</button>
     </div>
     <div>
       <h3>Chat</h3>
@@ -183,7 +208,6 @@
   let peer = null;
   let connections = [];
   let localStream = null;
-  let remoteStream = null;
   let isHost = false;
 
   // DOM refs
@@ -217,12 +241,13 @@
   const viewerSendFile = document.getElementById('viewerSendFile');
   const fullscreenBtn = document.getElementById('fullscreenBtn');
 
-  // Utility: display status message
+  // Utility: display status
   function setStatus(msg) {
     statusEl.textContent = msg;
+    console.log('[Status]', msg);
   }
 
-  // Utility: append to chat box
+  // Utility: append to chat
   function appendChat(box, msg, from) {
     const div = document.createElement('div');
     div.textContent = (from ? from + ': ' : '') + msg;
@@ -230,7 +255,37 @@
     box.scrollTop = box.scrollHeight;
   }
 
-  // ---------- Host functions (unchanged) ----------
+  // ---------- Full‑screen functions ----------
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      remoteVideo.requestFullscreen().then(() => {
+        setStatus('Full‑screen enabled');
+        fullscreenBtn.textContent = '⛶ Exit Full Screen';
+      }).catch(err => {
+        alert('Full‑screen error: ' + err.message);
+        console.error('Fullscreen error:', err);
+      });
+    } else {
+      document.exitFullscreen();
+    }
+  }
+
+  // Update button text when full‑screen changes
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement === remoteVideo) {
+      fullscreenBtn.textContent = '⛶ Exit Full Screen';
+    } else {
+      fullscreenBtn.textContent = '⛶ Full Screen';
+    }
+  });
+
+  // Event listeners for full‑screen
+  fullscreenBtn.onclick = toggleFullscreen;
+  remoteVideo.addEventListener('dblclick', toggleFullscreen);
+  // (Optional) single‑click on video also toggles – but may interfere with controls.
+  // remoteVideo.addEventListener('click', toggleFullscreen);
+
+  // ---------- Host functions ----------
   function startHosting() {
     const id = prompt('Enter a Peer ID for this room (or leave blank for random):', '');
     peer = new Peer(id, {
@@ -376,7 +431,7 @@
     chatBox.scrollTop = chatBox.scrollHeight;
   }
 
-  // ---------- Viewer functions (with full-screen) ----------
+  // ---------- Viewer functions ----------
   function joinViewer(hostId) {
     if (!hostId) { alert('Please enter the Host Peer ID.'); return; }
     peer = new Peer({
@@ -434,7 +489,6 @@
     disconnectBtn.disabled = true;
     viewerSendChat.disabled = true;
     viewerSendFile.disabled = true;
-    // Exit full-screen if active
     if (document.fullscreenElement) document.exitFullscreen();
   };
 
@@ -464,31 +518,6 @@
     };
     reader.readAsArrayBuffer(file);
   };
-
-  // ---------- Full‑screen toggle ----------
-  function toggleFullscreen() {
-    if (!document.fullscreenElement) {
-      remoteVideo.requestFullscreen().catch(err => {
-        alert('Fullscreen error: ' + err.message);
-      });
-    } else {
-      document.exitFullscreen();
-    }
-  }
-
-  fullscreenBtn.onclick = toggleFullscreen;
-
-  // Double‑click on video toggles full‑screen
-  remoteVideo.addEventListener('dblclick', toggleFullscreen);
-
-  // Update button text when full‑screen changes
-  document.addEventListener('fullscreenchange', () => {
-    if (document.fullscreenElement === remoteVideo) {
-      fullscreenBtn.textContent = '⛶ Exit Full Screen';
-    } else {
-      fullscreenBtn.textContent = '⛶ Full Screen';
-    }
-  });
 
   // ---------- Role selection ----------
   document.getElementById('btnHost').onclick = startHosting;
