@@ -54,7 +54,6 @@
       background: #0a0a1a;
       display: block;
     }
-    /* Full‑screen video */
     video:fullscreen {
       width: 100vw;
       height: 100vh;
@@ -95,7 +94,12 @@
       border: 1px solid #2ecc71;
       display: inline-block;
     }
-    /* Full‑screen button styling */
+    .video-wrapper {
+      position: relative;
+      display: inline-block;
+      width: 100%;
+      max-width: 800px;
+    }
     #fullscreenBtn {
       position: absolute;
       bottom: 16px;
@@ -115,12 +119,8 @@
       background: rgba(255,255,255,0.2);
       border-color: #2ecc71;
     }
-    .video-wrapper {
-      position: relative;
-      display: inline-block;
-      width: 100%;
-      max-width: 800px;
-    }
+    label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -147,6 +147,10 @@
     </div>
     <div class="flex">
       <button id="startCam" class="success">📷 Start Camera &amp; Mic</button>
+      <!-- Screen share with 1080p60 checkbox -->
+      <label>
+        <input type="checkbox" id="highQualityScreen"> 🔥 1080p60
+      </label>
       <button id="startScreen" class="secondary">🖥 Share Screen</button>
     </div>
     <video id="localVideo" autoplay muted playsinline></video>
@@ -240,6 +244,7 @@
   const viewerFileInput = document.getElementById('viewerFileInput');
   const viewerSendFile = document.getElementById('viewerSendFile');
   const fullscreenBtn = document.getElementById('fullscreenBtn');
+  const highQualityScreen = document.getElementById('highQualityScreen');
 
   // Utility: display status
   function setStatus(msg) {
@@ -270,7 +275,6 @@
     }
   }
 
-  // Update button text when full‑screen changes
   document.addEventListener('fullscreenchange', () => {
     if (document.fullscreenElement === remoteVideo) {
       fullscreenBtn.textContent = '⛶ Exit Full Screen';
@@ -279,11 +283,8 @@
     }
   });
 
-  // Event listeners for full‑screen
   fullscreenBtn.onclick = toggleFullscreen;
   remoteVideo.addEventListener('dblclick', toggleFullscreen);
-  // (Optional) single‑click on video also toggles – but may interfere with controls.
-  // remoteVideo.addEventListener('click', toggleFullscreen);
 
   // ---------- Host functions ----------
   function startHosting() {
@@ -332,6 +333,7 @@
     viewerCount.textContent = connections.length;
   }
 
+  // Camera (default, no quality selection)
   startCamBtn.onclick = async () => {
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -345,17 +347,48 @@
     }
   };
 
+  // Screen sharing with 1080p60 toggle
   startScreenBtn.onclick = async () => {
+    const useHighQuality = highQualityScreen.checked;
+    let videoConstraints;
+    if (useHighQuality) {
+      videoConstraints = {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 60 }
+      };
+    } else {
+      videoConstraints = true; // browser default
+    }
+
     try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: videoConstraints,
+        audio: true
+      });
       if (localStream) {
         localStream.getTracks().forEach(t => t.stop());
       }
       localStream = screenStream;
       localVideo.srcObject = localStream;
-      setStatus('Screen sharing active.');
+      setStatus(useHighQuality ? 'Screen sharing (1080p60)' : 'Screen sharing (default)');
       for (const conn of connections) {
         const call = peer.call(conn.peer, localStream);
+        // (Optional) set higher bitrate for 1080p60
+        if (useHighQuality) {
+          call.on('stream', () => {
+            try {
+              const senders = call.peerConnection.getSenders();
+              const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+              if (videoSender) {
+                const params = videoSender.getParameters();
+                if (!params.encodings) params.encodings = [{}];
+                params.encodings[0].maxBitrate = 8_000_000; // 8 Mbps
+                videoSender.setParameters(params).catch(console.warn);
+              }
+            } catch (e) { /* ignore */ }
+          });
+        }
       }
     } catch (err) {
       setStatus('Screen share cancelled or failed: ' + err.message);
